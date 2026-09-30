@@ -1,7 +1,8 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Pencil, Plus, ScrollText, Search, Server, Trash2 } from "lucide-react";
+import { Eye, Pencil, Play, Plus, RotateCcw, ScrollText, Search, Server, Square, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 import { DataTable, ColumnVisibilityMenu, type DataTableColumn } from "../../DataTable";
 import { Badge, Button, Card, Input } from "../../primitives";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../../ui/dialog";
@@ -9,9 +10,13 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import { EmptyState } from "../EmptyState";
 import type { FilterOption } from "../ProjectsFilterBar";
 import { statusTone } from "../statusTone";
-import { useOverviewProject } from "./useOverviewProject";
-import { toAddress } from "../../../lib/utils";
+import { useOverviewProject, useOverviewRefreshMs } from "./useOverviewProject";
+import ServiceViewDialog from "./ServiceViewDialog";
 import type { ProjectStatus } from "../../../lib/data";
+import { ApiError, addServiceApi, controlServiceApi, deleteServiceApi, getProjectServicesApi, updateServiceApi, type ServiceDTO } from "../../../lib/api";
+import { useDebouncedValue } from "../../../lib/useDebouncedValue";
+
+export type ServiceHealth = "available" | "unavailable" | "healthy" | "unhealthy";
 
 export interface ServiceRow {
   id: string;
@@ -21,8 +26,21 @@ export interface ServiceRow {
   host: string;
   port: number;
   status: ProjectStatus;
-  health: number | null;
+  serviceDirectory: string;
+  runCommand: string;
+  runnable: boolean;
+  /** number = legacy percent (standalone Services page); string = live probe status. */
+  health: number | ServiceHealth | null;
   url: string;
+}
+
+export interface ServiceFormInput {
+  name: string;
+  type: "API" | "UI";
+  host: string;
+  port: number;
+  serviceDirectory: string;
+  runCommand: string;
 }
 
 const typeOptions: FilterOption[] = [
@@ -36,6 +54,30 @@ const statusOptions: FilterOption[] = [
   { label: "Running", value: "Running" },
   { label: "Stopped", value: "Stopped" },
 ];
+
+const healthTone: Record<ServiceHealth, "green" | "amber" | "red" | "neutral"> = {
+  healthy: "green",
+  available: "amber",
+  unhealthy: "red",
+  unavailable: "neutral",
+};
+
+function HealthCell({ health }: { health: ServiceRow["health"] }) {
+  if (typeof health === "number") {
+    return (
+      <span className="flex items-center gap-2">
+        <span className="h-1.5 w-16 overflow-hidden rounded-full bg-muted">
+          <span className="block h-full rounded-full bg-emerald-500" style={{ width: `${health}%` }} />
+        </span>
+        <span className="tabular-nums">{health}%</span>
+      </span>
+    );
+  }
+  if (typeof health === "string") {
+    return <Badge tone={healthTone[health]}>{health.charAt(0).toUpperCase() + health.slice(1)}</Badge>;
+  }
+  return <span className="text-muted-foreground">—</span>;
+}
 
 function FilterSelect({ label, labelId, value, onChange, options, className }: { label: string; labelId: string; value: string; onChange: (v: string) => void; options: FilterOption[]; className?: string }) {
   return (
@@ -55,43 +97,156 @@ function FilterSelect({ label, labelId, value, onChange, options, className }: {
   );
 }
 
+const SEARCH_DEBOUNCE_MS = 400;
+
+function toServiceRow(dto: ServiceDTO): ServiceRow {
+  return {
+    id: dto.id,
+    name: dto.name,
+    type: dto.type === "UI" ? "UI" : "API",
+    address: dto.address,
+    host: dto.host,
+    port: dto.port,
+    status: dto.status,
+    serviceDirectory: dto.service_directory,
+    runCommand: dto.run_command,
+    runnable: dto.runnable,
+    health: dto.health,
+    url: dto.public_url,
+  };
+}
+
 export default function ServicesTab() {
   const project = useOverviewProject();
+  const refreshMs = useOverviewRefreshMs();
   const navigate = useNavigate();
 
-  const seed = useMemo<ServiceRow[]>(() => Array.from({ length: project.services }).map((_, i) => {
-    const host = "localhost";
-    const port = 3001 + i;
-    return {
-      id: `${project.id}-svc-0${i + 1}`,
-      name: `${project.id}-svc-0${i + 1}`,
-      type: i % 2 === 0 ? "API" : "UI",
-      address: toAddress(host, port),
-      host,
-      port,
-      status: project.status,
-      health: project.status === "Running" ? 99 - ((i * 7) % 5) : null,
-      url: `https://${project.id}-svc-0${i + 1}.localy.dev`,
-    };
-  }), [project]);
-  const [services, setServices] = useState(seed);
+  const [services, setServices] = useState<ServiceRow[]>([]);
+  const [loading, setLoading] = useState(true);
 
   const [query, setQuery] = useState("");
+  const debouncedQuery = useDebouncedValue(query, SEARCH_DEBOUNCE_MS);
   const [fStatus, setFStatus] = useState("All");
   const [fType, setFType] = useState("All");
   const [hiddenColumns, setHiddenColumns] = useState<string[]>([]);
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<ServiceRow | null>(null);
   const [deleting, setDeleting] = useState<ServiceRow | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [actingId, setActingId] = useState<string | null>(null);
+  const [viewing, setViewing] = useState<ServiceRow | null>(null);
 
   const toggleColumn = (key: string) => setHiddenColumns((prev) => prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]);
 
-  const visible = useMemo(() => services.filter(
-    (s) =>
-      (fStatus === "All" || s.status === fStatus) &&
-      (fType === "All" || s.type === fType) &&
-      `${s.name} ${s.address} ${s.url}`.toLowerCase().includes(query.trim().toLowerCase())
-  ), [services, fStatus, fType, query]);
+  const fetchServices = useCallback(async (opts?: { silent?: boolean }) => {
+    const silent = opts?.silent ?? false;
+    if (!silent) setLoading(true);
+    try {
+      const data = await getProjectServicesApi({
+        project_id: project.id,
+        search: debouncedQuery.trim(),
+        status: fStatus,
+        type: fType,
+      });
+      setServices(data.services.map(toServiceRow));
+    } catch (err) {
+      // Silent background refreshes never toast — a failing poll would
+      // otherwise spam an error every interval.
+      if (!silent) {
+        toast.error(err instanceof ApiError ? err.message : "Failed to load services.");
+      }
+    } finally {
+      if (!silent) setLoading(false);
+    }
+  }, [project.id, debouncedQuery, fStatus, fType]);
+
+  // Full load on mount and project change; silent background updates after.
+  const fullLoadNeeded = useRef(true);
+  useEffect(() => {
+    fullLoadNeeded.current = true;
+  }, [project.id]);
+
+  useEffect(() => {
+    const silent = !fullLoadNeeded.current;
+    fullLoadNeeded.current = false;
+    void fetchServices({ silent });
+
+    // Background polling on the header-selected interval. Skipped while the
+    // tab is hidden; changing the interval refetches immediately.
+    const timer = setInterval(() => {
+      if (document.hidden) return;
+      void fetchServices({ silent: true });
+    }, refreshMs);
+    return () => clearInterval(timer);
+  }, [fetchServices, refreshMs]);
+
+  // Refetch when the browser tab becomes visible again.
+  useEffect(() => {
+    const onVisible = () => {
+      if (!document.hidden) void fetchServices({ silent: true });
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [fetchServices]);
+
+  const handleSubmit = async (input: ServiceFormInput) => {
+    const payload = {
+      name: input.name,
+      type: input.type,
+      host: input.host,
+      port: input.port,
+      service_directory: input.serviceDirectory,
+      run_command: input.runCommand,
+    };
+    if (editing) {
+      try {
+        const data = await updateServiceApi({ service_id: editing.id, ...payload });
+        toast.success(data.message ?? `Service "${input.name}" updated`);
+        setCreating(false); setEditing(null);
+        await fetchServices();
+      } catch (err) {
+        toast.error(err instanceof ApiError ? err.message : "Failed to update service.");
+      }
+      return;
+    }
+    try {
+      await addServiceApi({ project_id: project.id, ...payload });
+      toast.success(`Service "${input.name}" added`);
+      setCreating(false); setEditing(null);
+      await fetchServices();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Failed to add service.");
+    }
+  };
+
+  const handleControl = async (s: ServiceRow, action: "start" | "stop" | "restart") => {
+    if (actingId) return;
+    setActingId(s.id);
+    try {
+      const data = await controlServiceApi(s.id, action);
+      toast.success(data.message ?? `Service "${s.name}" ${action}ed`);
+      await fetchServices();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : `Failed to ${action} service.`);
+    } finally {
+      setActingId(null);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!deleting || isDeleting) return;
+    setIsDeleting(true);
+    try {
+      const data = await deleteServiceApi(deleting.id);
+      toast.success(data.message ?? `Service "${deleting.name}" deleted`);
+      setDeleting(null);
+      await fetchServices();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Failed to delete service.");
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   const columns: DataTableColumn<ServiceRow>[] = [
     { key: "name", header: "Service Name", cell: (s) => <span className="font-medium tabular-nums">{s.name}</span> },
@@ -100,23 +255,24 @@ export default function ServicesTab() {
     { key: "status", header: "Status", cell: (s) => <Badge tone={statusTone[s.status]}>{s.status}</Badge> },
     {
       key: "health", header: "Health",
-      cell: (s) => s.health === null
-        ? <span className="text-muted-foreground">—</span>
-        : (
-          <span className="flex items-center gap-2">
-            <span className="h-1.5 w-16 overflow-hidden rounded-full bg-muted">
-              <span className="block h-full rounded-full bg-emerald-500" style={{ width: `${s.health}%` }} />
-            </span>
-            <span className="tabular-nums">{s.health}%</span>
-          </span>
-        ),
+      cell: (s) => <HealthCell health={s.health} />,
     },
     { key: "url", header: "Public URL", cell: (s) => <span className="block max-w-52 truncate font-mono text-xs tabular-nums text-muted-foreground">{s.url}</span> },
     {
       key: "actions", header: "Actions", headerClassName: "text-right", cellClassName: "text-right", enableHiding: false,
       cell: (s) => (
         <span className="inline-flex items-center gap-1.5">
+          <Button variant="outline" size="icon" onClick={() => setViewing(s)} aria-label={`View ${s.name}`} title="View"><Eye className="h-4 w-4" /></Button>
           <Button variant="outline" size="icon" onClick={() => setEditing(s)} aria-label={`Edit ${s.name}`} title="Edit"><Pencil className="h-4 w-4" /></Button>
+          {s.runnable && s.status === "Stopped" && (
+            <Button variant="outline" size="icon" onClick={() => handleControl(s, "start")} disabled={actingId === s.id} aria-label={`Start ${s.name}`} title="Start"><Play className="h-4 w-4" /></Button>
+          )}
+          {s.runnable && s.status === "Running" && (
+            <>
+              <Button variant="outline" size="icon" onClick={() => handleControl(s, "restart")} disabled={actingId === s.id} aria-label={`Restart ${s.name}`} title="Restart"><RotateCcw className="h-4 w-4" /></Button>
+              <Button variant="outline" size="icon" onClick={() => handleControl(s, "stop")} disabled={actingId === s.id} aria-label={`Stop ${s.name}`} title="Stop"><Square className="h-4 w-4" /></Button>
+            </>
+          )}
           <Button variant="outline" size="icon" onClick={() => navigate("../logs", { state: { project } })} aria-label={`View logs for ${s.name}`} title="Logs"><ScrollText className="h-4 w-4" /></Button>
           <Button variant="destructive" size="icon" onClick={() => setDeleting(s)} aria-label={`Delete ${s.name}`} title="Delete"><Trash2 className="h-4 w-4" /></Button>
         </span>
@@ -144,10 +300,12 @@ export default function ServicesTab() {
         </div>
         <DataTable
           columns={columns}
-          data={visible}
+          data={loading ? [] : services}
           hiddenColumns={hiddenColumns}
           pagination={false}
-          empty={<div className="p-6"><EmptyState icon={Server} title="No services found" hint="Try a different search term or add a service." /></div>}
+          empty={loading
+            ? <div className="p-6 text-center text-[13px] text-muted-foreground">Loading services…</div>
+            : <div className="p-6"><EmptyState icon={Server} title="No services found" hint="Try a different search term or add a service." /></div>}
         />
       </Card>
 
@@ -156,18 +314,16 @@ export default function ServicesTab() {
         open={creating || editing !== null}
         initial={editing ?? undefined}
         onOpenChange={(v) => { if (!v) { setCreating(false); setEditing(null); } }}
-        onSubmit={(input) => {
-          if (editing) {
-            setServices((prev) => prev.map((x) => x.id === editing.id ? { ...x, ...input, address: toAddress(input.host, input.port) } : x));
-          } else {
-            const slug = input.name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
-            setServices((prev) => [{ id: `${slug}-${Date.now()}`, status: project.status, health: project.status === "Running" ? 100 : null, url: `https://${slug}.localy.dev`, ...input, address: toAddress(input.host, input.port) }, ...prev]);
-          }
-          setCreating(false); setEditing(null);
-        }}
+        onSubmit={handleSubmit}
       />
 
-      <Dialog open={deleting !== null} onOpenChange={(v) => { if (!v) setDeleting(null); }}>
+      <ServiceViewDialog
+        key={viewing ? viewing.id : "closed"}
+        service={viewing}
+        onOpenChange={(v) => { if (!v) setViewing(null); }}
+      />
+
+      <Dialog open={deleting !== null} onOpenChange={(v) => { if (!v && !isDeleting) setDeleting(null); }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Delete service</DialogTitle>
@@ -176,13 +332,14 @@ export default function ServicesTab() {
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" size="sm" type="button" onClick={() => setDeleting(null)}>Cancel</Button>
+            <Button variant="outline" size="sm" type="button" onClick={() => setDeleting(null)} disabled={isDeleting}>Cancel</Button>
             <Button
               variant="destructive"
               size="sm"
-              onClick={() => { if (deleting) setServices((prev) => prev.filter((x) => x.id !== deleting.id)); setDeleting(null); }}
+              onClick={handleDelete}
+              disabled={isDeleting}
             >
-              Delete
+              {isDeleting ? "Deleting…" : "Delete"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -193,22 +350,24 @@ export default function ServicesTab() {
 
 export function ServiceDialog({ open, initial, onOpenChange, onSubmit }: {
   open: boolean;
-  initial?: { name: string; type: "API" | "UI"; host: string; port: number };
+  initial?: ServiceFormInput;
   onOpenChange: (v: boolean) => void;
-  onSubmit: (input: { name: string; type: "API" | "UI"; host: string; port: number }) => void;
+  onSubmit: (input: ServiceFormInput) => void;
 }) {
   const [name, setName] = useState(initial?.name ?? "");
   const [type, setType] = useState<"API" | "UI">(initial?.type ?? "API");
   const [host, setHost] = useState(initial?.host ?? "");
   const [port, setPort] = useState(initial ? String(initial.port) : "");
+  const [serviceDirectory, setServiceDirectory] = useState(initial?.serviceDirectory ?? "");
+  const [runCommand, setRunCommand] = useState(initial?.runCommand ?? "");
   const portNum = Number(port);
   const valid = name.trim() !== "" && host.trim() !== "" && Number.isInteger(portNum) && portNum >= 1 && portNum <= 65535;
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!valid) return;
-    onSubmit({ name: name.trim(), type, host: host.trim(), port: portNum });
-    setName(""); setType("API"); setHost(""); setPort("");
+    onSubmit({ name: name.trim(), type, host: host.trim(), port: portNum, serviceDirectory: serviceDirectory.trim(), runCommand: runCommand.trim() });
+    setName(""); setType("API"); setHost(""); setPort(""); setServiceDirectory(""); setRunCommand("");
   };
 
   return (
@@ -244,6 +403,14 @@ export function ServiceDialog({ open, initial, onOpenChange, onSubmit }: {
           <div>
             <label htmlFor="service-port" className="mb-1.5 block text-[13px] font-medium">Port</label>
             <Input id="service-port" value={port} onChange={(e) => setPort(e.target.value)} placeholder="3001" required inputMode="numeric" />
+          </div>
+          <div>
+            <label htmlFor="service-directory" className="mb-1.5 block text-[13px] font-medium">Service directory <span className="font-normal text-muted-foreground">(optional)</span></label>
+            <Input id="service-directory" value={serviceDirectory} onChange={(e) => setServiceDirectory(e.target.value)} placeholder="e.g. C:\repos\atlas-api" />
+          </div>
+          <div>
+            <label htmlFor="service-command" className="mb-1.5 block text-[13px] font-medium">Run command <span className="font-normal text-muted-foreground">(optional)</span></label>
+            <Input id="service-command" value={runCommand} onChange={(e) => setRunCommand(e.target.value)} placeholder="e.g. npm run dev" />
           </div>
           <DialogFooter>
             <Button variant="outline" size="sm" type="button" onClick={() => onOpenChange(false)}>Cancel</Button>

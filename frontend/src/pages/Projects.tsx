@@ -1,43 +1,77 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Plus } from "lucide-react";
-import { projects } from "../lib/data";
+import { toast } from "sonner";
 import { Page } from "../components/page";
 import { Button } from "../components/primitives";
 import { NewProjectDialog, ProjectsFilterBar, ProjectsGrid, type NewProjectInput } from "../components/projects";
+import { ApiError, createProjectApi, getProjectsApi, type Project } from "../lib/api";
+import { useDebouncedValue } from "../lib/useDebouncedValue";
+
+const STATUSES = [
+  { label: "All", value: "All" },
+  { label: "Running", value: "Running" },
+  { label: "Stopped", value: "Stopped" },
+];
+
+const SEARCH_DEBOUNCE_MS = 400;
+
+// Fixed category options for the New Project dialog.
+const PROJECT_CATEGORY_OPTIONS = [
+  { label: "FRONTEND", value: "FRONTEND" },
+  { label: "BACKEND", value: "BACKEND" },
+  { label: "SERVICE", value: "SERVICE" },
+  { label: "FULL STACK", value: "FULL STACK" },
+];
 
 export default function Projects() {
   const [query, setQuery] = useState("");
+  const debouncedQuery = useDebouncedValue(query, SEARCH_DEBOUNCE_MS);
   const [status, setStatus] = useState("All");
   const [category, setCategory] = useState("All");
   const [asc, setAsc] = useState(true);
   const [view, setView] = useState<"grid" | "list">("grid");
   const [open, setOpen] = useState(false);
-  const [list, setList] = useState(projects);
 
-  const statuses = useMemo(() => ["All", ...new Set(projects.map((p) => p.status))].map((s) => ({ label: s, value: s })), []);
-  const categories = useMemo(() => ["All", ...new Set(projects.map((p) => p.category))].map((c) => ({ label: c, value: c })), []);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [total, setTotal] = useState(0);
+  const [categories, setCategories] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const fetchProjects = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await getProjectsApi({
+        search: debouncedQuery.trim(),
+        status,
+        category,
+        sort: asc ? "asc" : "desc",
+      });
+      setProjects(data.projects);
+      setTotal(data.total);
+      setCategories(data.categories);
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Failed to load projects.");
+    } finally {
+      setLoading(false);
+    }
+  }, [debouncedQuery, status, category, asc]);
+
+  useEffect(() => {
+    void fetchProjects();
+  }, [fetchProjects]);
+
   const resetFilters = () => { setQuery(""); setStatus("All"); setCategory("All"); };
 
-  const createProject = (input: NewProjectInput) => {
-    const slug = input.name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
-    setList((prev) => [
-      { id: `${slug}-${Date.now()}`, name: input.name, category: input.category, status: "Stopped" as const, description: input.description || "No description yet.", services: 0, tunnels: 0 },
-      ...prev,
-    ]);
+  const createProject = async (input: NewProjectInput) => {
+    try {
+      await createProjectApi(input);
+      toast.success(`Project "${input.name}" created`);
+      setOpen(false);
+      await fetchProjects();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Failed to create project.");
+    }
   };
-
-  const visible = useMemo(
-    () =>
-      list
-        .filter(
-          (p) =>
-            (status === "All" || p.status === status) &&
-            (category === "All" || p.category === category) &&
-            `${p.name} ${p.description}`.toLowerCase().includes(query.trim().toLowerCase())
-        )
-        .sort((a, b) => (asc ? a.name.localeCompare(b.name) : b.name.localeCompare(a.name))),
-    [query, status, category, asc, list]
-  );
 
   return (
     <Page
@@ -47,16 +81,16 @@ export default function Projects() {
     >
       <ProjectsFilterBar
         query={query} onQueryChange={setQuery}
-        status={status} onStatusChange={setStatus} statuses={statuses}
-        category={category} onCategoryChange={setCategory} categories={categories}
+        status={status} onStatusChange={setStatus} statuses={STATUSES}
+        category={category} onCategoryChange={setCategory} categories={[{ label: "All", value: "All" }, ...categories.map((c) => ({ label: c, value: c }))]}
         asc={asc} onToggleSort={() => setAsc((v) => !v)}
         view={view} onViewChange={setView}
       />
-      <ProjectsGrid projects={visible} total={list.length} view={view} onClearFilters={resetFilters} />
+      <ProjectsGrid projects={projects} total={total} view={view} onClearFilters={resetFilters} loading={loading} />
       <NewProjectDialog
         open={open}
         onOpenChange={setOpen}
-        categories={categories.filter((c) => c.value !== "All")}
+        categories={PROJECT_CATEGORY_OPTIONS}
         onCreate={createProject}
       />
     </Page>

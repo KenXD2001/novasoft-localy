@@ -33,8 +33,11 @@ export default function Services() {
       host,
       port,
       status: p.status,
+      serviceDirectory: "",
+      runCommand: "",
+      runnable: false,
       health: p.status === "Running" ? 99 - ((i * 7) % 5) : null,
-      url: `https://${p.id}-svc-0${i + 1}.localy.dev`,
+      url: `https://${p.id}-svc-0${i + 1}.locally.dev`,
     };
   })), []);
   const [services, setServices] = useState(seed);

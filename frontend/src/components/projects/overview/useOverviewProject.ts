@@ -8,6 +8,16 @@ export const overviewTabs = [
   { to: "logs", label: "Logs" },
 ];
 
+export interface OverviewContext {
+  project: Project;
+  /** Auto-refresh interval (ms) selected in the overview header. */
+  refreshMs: number;
+}
+
 export function useOverviewProject() {
-  return useOutletContext<{ project: Project }>().project;
+  return useOutletContext<OverviewContext>().project;
+}
+
+export function useOverviewRefreshMs() {
+  return useOutletContext<OverviewContext>().refreshMs;
 }

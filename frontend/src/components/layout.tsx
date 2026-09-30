@@ -24,7 +24,7 @@ const iconMap: Record<string, typeof Home> = {
 function useTheme() {
   const [dark, setDark] = useState(() => {
     try {
-      return localStorage.getItem("localy-theme") === "dark";
+      return localStorage.getItem("locally-theme") === "dark";
     } catch {
       return false;
     }
@@ -32,7 +32,7 @@ function useTheme() {
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
     try {
-      localStorage.setItem("localy-theme", dark ? "dark" : "light");
+      localStorage.setItem("locally-theme", dark ? "dark" : "light");
     } catch {
       /* storage unavailable — theme still applies for this session */
     }
@@ -55,7 +55,7 @@ export function AuthLayout({ children }: { children: React.ReactNode }) {
         <div className="absolute inset-0 opacity-[0.15] [background-image:linear-gradient(rgba(255,255,255,0.25)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.25)_1px,transparent_1px)] [background-size:44px_44px] [mask-image:radial-gradient(70%_60%_at_50%_40%,black,transparent)]" />
         <div className="relative flex items-center gap-2.5">
           <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary"><Zap className="h-4.5 w-4.5 text-primary-foreground" /></div>
-          <span className="text-[17px] font-semibold tracking-tight">Localy</span>
+          <span className="text-[17px] font-semibold tracking-tight">Locally</span>
         </div>
         <div className="relative">
           <Badge tone="default" className="mb-5">New · AI summaries for every metric</Badge>
@@ -71,7 +71,7 @@ export function AuthLayout({ children }: { children: React.ReactNode }) {
           </div>
         </div>
         <div className="relative flex items-center justify-between text-xs text-white/40">
-          <span>© 2026 Localy Inc.</span><span>SOC 2 · GDPR ready</span>
+          <span>© 2026 Locally Inc.</span><span>SOC 2 · GDPR ready</span>
         </div>
       </div>
     </div>
@@ -127,14 +127,31 @@ function UserMenu({ collapsed }: { collapsed: boolean }) {
 /* 2026 header pattern: route-derived trail next to the toggle */
 function HeaderBreadcrumbs() {
   const { pathname } = useLocation();
+  if (pathname.startsWith("/projects/overview")) {
+    const tab = pathname.split("/").pop() || "details";
+    const label = tab.charAt(0).toUpperCase() + tab.slice(1);
+    return (
+      <Breadcrumb className="hidden sm:block">
+        <BreadcrumbList>
+          <BreadcrumbItem>
+            <BreadcrumbLink render={<Link to="/projects" />}>Projects</BreadcrumbLink>
+          </BreadcrumbItem>
+          <BreadcrumbSeparator />
+          <BreadcrumbItem>
+            <BreadcrumbLink render={<Link to="/projects/overview/details" />}>Overview</BreadcrumbLink>
+          </BreadcrumbItem>
+          <BreadcrumbSeparator />
+          <BreadcrumbItem>
+            <BreadcrumbPage>{label}</BreadcrumbPage>
+          </BreadcrumbItem>
+        </BreadcrumbList>
+      </Breadcrumb>
+    );
+  }
   const current = navSections.flatMap((s) => s.items).find((i) => i.to === pathname)?.label ?? "Dashboard";
   return (
     <Breadcrumb className="hidden sm:block">
       <BreadcrumbList>
-        <BreadcrumbItem>
-          <BreadcrumbLink render={<Link to="/" />}>Home</BreadcrumbLink>
-        </BreadcrumbItem>
-        <BreadcrumbSeparator />
         <BreadcrumbItem>
           <BreadcrumbPage>{current}</BreadcrumbPage>
         </BreadcrumbItem>
@@ -147,7 +164,7 @@ function HeaderBreadcrumbs() {
 function Sidebar({ collapsed, mobileOpen, onCloseMobile }: { collapsed: boolean; mobileOpen: boolean; onCloseMobile: () => void }) {
   const loc = useLocation();
   const nav = (to: string, label: string, icon: string, badge?: string) => {
-    const active = loc.pathname === to;
+    const active = loc.pathname === to || (to !== "/" && loc.pathname.startsWith(`${to}/`));
     const Icon = iconMap[icon] ?? Home;
     return (
       <Link
@@ -171,7 +188,7 @@ function Sidebar({ collapsed, mobileOpen, onCloseMobile }: { collapsed: boolean;
     <div className="flex h-full flex-col">
       <div className="flex h-16 items-center gap-2.5 px-4">
         <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary shrink-0"><Zap className="h-4 w-4 text-primary-foreground" /></div>
-        {!collapsed && <span className="text-[15px] font-semibold tracking-tight">Localy</span>}
+        {!collapsed && <span className="text-[15px] font-semibold tracking-tight">Locally</span>}
       </div>
       <div className="flex-1 space-y-6 overflow-y-auto px-3 py-2">
         {navSections.map((s) => (

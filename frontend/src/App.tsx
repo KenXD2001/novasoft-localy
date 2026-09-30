@@ -1,4 +1,5 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { Toaster } from "./components/ui/sonner";
 import { MainLayout } from "./components/layout";
 import { DetailsTab, LogsTab, Overview, ServicesTab, TunnelsTab } from "./components/projects";
 import Dashboard from "./pages/Dashboard";
@@ -10,6 +11,7 @@ import Tunnels from "./pages/Tunnels";
 export default function App() {
   return (
     <BrowserRouter>
+      <Toaster />
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route element={<MainLayout />}>

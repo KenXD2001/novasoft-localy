@@ -1,0 +1,73 @@
+// PostgreSQL datasource — database: novasoft-locally-local
+// Run: npx prisma migrate dev --name init  (requires a running Postgres)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Scaffold placeholder model. Replace/extend with real domain models
+// (Project, Service, Tunnel, ...) as the API grows.
+model User {
+  id        String   @id @default(cuid())
+  name      String
+  email     String   @unique
+  phone     String   @unique
+  password  String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("users")
+}
+
+model Project {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  category    String
+  description String   @default("")
+  status      String   @default("Stopped")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  services Service[]
+
+  @@map("projects")
+}
+
+model Service {
+  id               String   @id @default(cuid())
+  projectId        String   @map("project_id")
+  project          Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name             String
+  type             String
+  host             String
+  port             Int
+  status           String   @default("Stopped")
+  serviceDirectory String   @default("") @map("service_directory")
+  runCommand       String   @default("") @map("run_command")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  logs ServiceLog[]
+
+  @@unique([projectId, name])
+  @@map("services")
+}
+
+model ServiceLog {
+  id        String   @id @default(cuid())
+  serviceId String   @map("service_id")
+  service   Service  @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  level     String   @default("info")
+  source    String   @default("system")
+  logText   String   @map("log_text")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([serviceId, createdAt])
+  @@map("service_logs")
+}

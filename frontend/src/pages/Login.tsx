@@ -1,10 +1,12 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { /* Link, */ useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Eye, EyeOff, Loader2, Zap } from "lucide-react";
+import { toast } from "sonner";
 import { AuthLayout } from "../components/layout";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { ApiError, loginUser, saveAuth } from "../lib/api";
 
 function GithubIcon({ className }: { className?: string }) {
   return (
@@ -27,17 +29,33 @@ export default function Login() {
   const [show, setShow] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  const submit = (e: React.FormEvent) => {
+  const submit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    const form = new FormData(e.currentTarget);
+    const email = String(form.get("email") ?? "").trim();
+    const password = String(form.get("password") ?? "");
+    if (!email || !password) {
+      toast.error("Enter your email and password to continue.");
+      return;
+    }
     setLoading(true);
-    setTimeout(() => navigate("/"), 900); // ponytail: mock auth, wire real API when backend lands
+    try {
+      const auth = await loginUser(email, password);
+      saveAuth(auth);
+      toast.success(`Welcome back, ${auth.user.name.split(" ")[0]}`);
+      navigate("/");
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Something went wrong, please try again.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
     <AuthLayout>
       <div className="mb-8 flex items-center gap-2.5 lg:hidden">
         <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary"><Zap className="h-4 w-4 text-primary-foreground" /></div>
-        <span className="text-lg font-semibold tracking-tight">Localy</span>
+        <span className="text-lg font-semibold tracking-tight">Locally</span>
       </div>
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
         <h1 className="text-[28px] font-semibold tracking-tight">Welcome back</h1>
@@ -47,15 +65,15 @@ export default function Login() {
       <form onSubmit={submit} className="mt-8 space-y-4">
         <div>
           <label className="mb-1.5 block text-[13px] font-medium">Work email</label>
-          <Input type="email" required placeholder="sarah@company.com" defaultValue="sarah@company.com" />
+          <Input type="email" name="email" required placeholder="you@company.com" autoComplete="email" />
         </div>
         <div>
           <div className="mb-1.5 flex items-center justify-between">
             <label className="text-[13px] font-medium">Password</label>
-            <Link to="/login" className="text-[13px] font-medium text-foreground underline decoration-primary decoration-2 underline-offset-2 hover:decoration-primary/70">Forgot password?</Link>
+            {/* <Link to="/login" className="text-[13px] font-medium text-foreground underline decoration-primary decoration-2 underline-offset-2 hover:decoration-primary/70">Forgot password?</Link> */}
           </div>
           <div className="relative">
-            <Input type={show ? "text" : "password"} required placeholder="••••••••" defaultValue="password123" className="pr-10" />
+            <Input type={show ? "text" : "password"} name="password" required placeholder="••••••••" autoComplete="current-password" className="pr-10" />
             <Button variant="ghost" size="icon-sm" type="button" onClick={() => setShow(!show)} aria-label={show ? "Hide password" : "Show password"} className="absolute inset-y-0 right-1 m-auto">
               {show ? <EyeOff /> : <Eye />}
             </Button>

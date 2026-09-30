@@ -56,7 +56,7 @@ export default function TunnelsTab() {
     return {
       id: `${project.id}-tun-0${i + 1}`,
       name: `${project.id}-tun-0${i + 1}`,
-      url: `https://${project.id}-tun-0${i + 1}.localy.dev`,
+      url: `https://${project.id}-tun-0${i + 1}.locally.dev`,
       address: `http://${host}:${port}`,
       host,
       port,

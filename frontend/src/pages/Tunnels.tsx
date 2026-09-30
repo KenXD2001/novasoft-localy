@@ -27,7 +27,7 @@ export default function Tunnels() {
       projectId: p.id,
       projectName: p.name,
       name: `${p.id}-tun-0${i + 1}`,
-      url: `https://${p.id}-tun-0${i + 1}.localy.dev`,
+      url: `https://${p.id}-tun-0${i + 1}.locally.dev`,
       address: `http://${host}:${port}`,
       host,
       port,

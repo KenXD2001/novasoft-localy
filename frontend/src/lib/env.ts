@@ -4,7 +4,7 @@
 
 export type AppEnv = "development" | "production";
 
-function required(name: "VITE_HOST" | "VITE_PORT" | "VITE_APP_ENV"): string {
+function required(name: "VITE_HOST" | "VITE_PORT" | "VITE_APP_ENV" | "VITE_API_URL"): string {
   const value = import.meta.env[name];
   if (!value) {
     throw new Error(
@@ -33,4 +33,5 @@ export const env = {
   HOST: required("VITE_HOST"),
   PORT: parsePort(required("VITE_PORT")),
   APP_ENV: parseAppEnv(required("VITE_APP_ENV")),
+  API_URL: required("VITE_API_URL"),
 } as const;
